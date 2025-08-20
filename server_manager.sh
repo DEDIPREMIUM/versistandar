@@ -24,13 +24,13 @@ fi
 install_dependencies() {
     echo -e "${YELLOW}Installing required packages...${NC}"
     apt-get update -qq
-    apt-get install -y -qq curl wget net-tools htop vnstat nginx apache2 speedtest-cli openssl >/dev/null 2>&1
+    apt-get install -y -qq curl wget net-tools htop vnstat nginx apache2 speedtest-cli openssl jq >/dev/null 2>&1
     echo -e "${GREEN}Dependencies installed successfully.${NC}"
 }
 
 # Check if dependencies are installed
 check_dependencies() {
-    local packages=("curl" "wget" "net-tools" "htop" "vnstat" "nginx" "apache2" "speedtest-cli" "openssl")
+    local packages=("curl" "wget" "net-tools" "htop" "vnstat" "nginx" "apache2" "speedtest-cli" "openssl" "jq")
     local missing=()
     
     for pkg in "${packages[@]}"; do
@@ -467,7 +467,50 @@ main_menu() {
 }
 
 # Placeholder functions for menu items
-create_ssh_account() { echo "Function not implemented"; sleep 2; ssh_menu; }
+create_ssh_account() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                    CREATE SSH ACCOUNT                  ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # Get username
+    read -p "Enter username: " username
+    if id "$username" &>/dev/null; then
+        echo -e "${RED}Username '$username' already exists.${NC}"
+        sleep 2
+        ssh_menu
+        return
+    fi
+
+    # Get password
+    read -p "Enter password: " password
+
+    # Get expiration
+    read -p "Enter account duration (days): " duration
+
+    # Calculate expiration date
+    exp_date=$(date -d "+$duration days" +"%Y-%m-%d")
+
+    # Create user
+    useradd -e "$exp_date" -s /bin/false -M "$username" >/dev/null 2>&1
+    echo "$username:$password" | chpasswd
+
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                  SSH ACCOUNT CREATED                   ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "${YELLOW}Host/IP:${NC}       ${GREEN}$(hostname -I | awk '{print $1}')${NC}"
+    echo -e "${YELLOW}Username:${NC}      ${GREEN}$username${NC}"
+    echo -e "${YELLOW}Password:${NC}      ${GREEN}$password${NC}"
+    echo -e "${YELLOW}Expires on:${NC}    ${GREEN}$exp_date${NC}"
+    echo -e ""
+    echo -e "${WHITE}You can now use an SSH client like PuTTY or OpenSSH to connect.${NC}"
+    echo -e ""
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -n 1 -s -r -p "Press any key to return to the SSH menu"
+    ssh_menu
+}
 trial_ssh_account() { echo "Function not implemented"; sleep 2; ssh_menu; }
 renew_ssh_account() { echo "Function not implemented"; sleep 2; ssh_menu; }
 delete_ssh_account() { echo "Function not implemented"; sleep 2; ssh_menu; }
@@ -477,28 +520,396 @@ delete_expired_users() { echo "Function not implemented"; sleep 2; ssh_menu; }
 auto_kill_ssh() { echo "Function not implemented"; sleep 2; ssh_menu; }
 check_multi_login() { echo "Function not implemented"; sleep 2; ssh_menu; }
 
-create_vmess_account() { echo "Function not implemented"; sleep 2; vmess_menu; }
+create_vmess_account() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                  CREATE VMESS ACCOUNT                  ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # --- Configuration ---
+    XRAY_CONFIG="/usr/local/etc/xray/config.json"
+    USER_DB="/usr/local/bin/server-manager/data/vmess_users.db"
+
+    # --- Pre-flight checks ---
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}Error: jq is not installed. Please fix the script dependencies.${NC}"
+        sleep 3
+        vmess_menu
+        return
+    fi
+    if [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${RED}Error: Xray config file not found at $XRAY_CONFIG${NC}"
+        sleep 3
+        vmess_menu
+        return
+    fi
+
+    # Ensure user database file and its directory exist
+    mkdir -p "$(dirname "$USER_DB")"
+    touch "$USER_DB"
+
+    # --- Get user details ---
+    read -p "Enter username (e.g., user@domain.com): " username
+    if grep -q "^${username}:" "$USER_DB"; then
+        echo -e "${RED}Username '$username' already exists.${NC}"
+        sleep 2
+        vmess_menu
+        return
+    fi
+
+    read -p "Enter account duration (in days): " duration
+    if ! [[ "$duration" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid duration. Please enter a number.${NC}"
+        sleep 2
+        vmess_menu
+        return
+    fi
+
+    # --- Generate user data ---
+    uuid=$(cat /proc/sys/kernel/random/uuid)
+    exp_date=$(date -d "+$duration days" +"%Y-%m-%d")
+
+    # --- Modify Xray Config ---
+    # Create a backup of the config file
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak"
+
+    # Add the new client to the first VMess inbound using jq
+    # This complex command ensures it works even if the 'clients' array is null
+    jq '.inbounds |= map(if .protocol == "vmess" and .settings.clients == null then .settings += {"clients": []} else . end) | .inbounds |= map(if .protocol == "vmess" then .settings.clients += [{"id": "'$uuid'", "email": "'$username'", "alterId": 0}] else . end)' "$XRAY_CONFIG" > "$XRAY_CONFIG.tmp"
+
+    if [ $? -eq 0 ]; then
+        mv "$XRAY_CONFIG.tmp" "$XRAY_CONFIG"
+    else
+        echo -e "${RED}Failed to update Xray config. Check for errors.${NC}"
+        rm -f "$XRAY_CONFIG.tmp"
+        mv "$XRAY_CONFIG.bak" "$XRAY_CONFIG" # Restore backup
+        sleep 3
+        vmess_menu
+        return
+    fi
+
+    # --- Update Database and Services ---
+    echo "$username:$exp_date:$uuid" >> "$USER_DB"
+
+    echo -e "${YELLOW}Restarting Xray service to apply changes...${NC}"
+    systemctl restart xray
+    sleep 2
+
+    # --- Display Results ---
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                 VMESS ACCOUNT CREATED                  ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "${YELLOW}Username (email):${NC} ${GREEN}$username${NC}"
+    echo -e "${YELLOW}UUID:${NC}             ${GREEN}$uuid${NC}"
+    echo -e "${YELLOW}AlterId:${NC}          ${GREEN}0${NC}"
+    echo -e "${YELLOW}Expires on:${NC}       ${GREEN}$exp_date${NC}"
+    echo -e ""
+    echo -e "${WHITE}NOTE: Further details (address, port, path) depend on your Xray inbound configuration.${NC}"
+    echo -e ""
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -n 1 -s -r -p "Press any key to return to the VMESS menu"
+    vmess_menu
+}
 trial_vmess_account() { echo "Function not implemented"; sleep 2; vmess_menu; }
 renew_vmess_account() { echo "Function not implemented"; sleep 2; vmess_menu; }
 delete_vmess_account() { echo "Function not implemented"; sleep 2; vmess_menu; }
 check_vmess_login() { echo "Function not implemented"; sleep 2; vmess_menu; }
 list_vmess_members() { echo "Function not implemented"; sleep 2; vmess_menu; }
 
-create_vless_account() { echo "Function not implemented"; sleep 2; vless_menu; }
+create_vless_account() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                  CREATE VLESS ACCOUNT                  ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # --- Configuration ---
+    XRAY_CONFIG="/usr/local/etc/xray/config.json"
+    USER_DB="/usr/local/bin/server-manager/data/vless_users.db"
+
+    # --- Pre-flight checks ---
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}Error: jq is not installed. Please fix the script dependencies.${NC}"
+        sleep 3
+        vless_menu
+        return
+    fi
+    if [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${RED}Error: Xray config file not found at $XRAY_CONFIG${NC}"
+        sleep 3
+        vless_menu
+        return
+    fi
+
+    # Ensure user database file and its directory exist
+    mkdir -p "$(dirname "$USER_DB")"
+    touch "$USER_DB"
+
+    # --- Get user details ---
+    read -p "Enter username (e.g., user@domain.com): " username
+    if grep -q "^${username}:" "$USER_DB"; then
+        echo -e "${RED}Username '$username' already exists.${NC}"
+        sleep 2
+        vless_menu
+        return
+    fi
+
+    read -p "Enter account duration (in days): " duration
+    if ! [[ "$duration" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid duration. Please enter a number.${NC}"
+        sleep 2
+        vless_menu
+        return
+    fi
+
+    # --- Generate user data ---
+    uuid=$(cat /proc/sys/kernel/random/uuid)
+    exp_date=$(date -d "+$duration days" +"%Y-%m-%d")
+
+    # --- Modify Xray Config ---
+    # Create a backup of the config file
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak"
+
+    # Add the new client to the first VLESS inbound using jq
+    jq '.inbounds |= map(if .protocol == "vless" and .settings.clients == null then .settings += {"clients": []} else . end) | .inbounds |= map(if .protocol == "vless" then .settings.clients += [{"id": "'$uuid'", "email": "'$username'", "flow": "xtls-rprx-direct"}] else . end)' "$XRAY_CONFIG" > "$XRAY_CONFIG.tmp"
+
+    if [ $? -eq 0 ]; then
+        mv "$XRAY_CONFIG.tmp" "$XRAY_CONFIG"
+    else
+        echo -e "${RED}Failed to update Xray config. Check for errors.${NC}"
+        rm -f "$XRAY_CONFIG.tmp"
+        mv "$XRAY_CONFIG.bak" "$XRAY_CONFIG" # Restore backup
+        sleep 3
+        vless_menu
+        return
+    fi
+
+    # --- Update Database and Services ---
+    echo "$username:$exp_date:$uuid" >> "$USER_DB"
+
+    echo -e "${YELLOW}Restarting Xray service to apply changes...${NC}"
+    systemctl restart xray
+    sleep 2
+
+    # --- Display Results ---
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                 VLESS ACCOUNT CREATED                  ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "${YELLOW}Username (email):${NC} ${GREEN}$username${NC}"
+    echo -e "${YELLOW}UUID:${NC}             ${GREEN}$uuid${NC}"
+    echo -e "${YELLOW}Expires on:${NC}       ${GREEN}$exp_date${NC}"
+    echo -e ""
+    echo -e "${WHITE}NOTE: Further details (address, port, path, flow) depend on your Xray inbound configuration.${NC}"
+    echo -e ""
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -n 1 -s -r -p "Press any key to return to the VLESS menu"
+    vless_menu
+}
 trial_vless_account() { echo "Function not implemented"; sleep 2; vless_menu; }
 renew_vless_account() { echo "Function not implemented"; sleep 2; vless_menu; }
 delete_vless_account() { echo "Function not implemented"; sleep 2; vless_menu; }
 check_vless_login() { echo "Function not implemented"; sleep 2; vless_menu; }
 list_vless_members() { echo "Function not implemented"; sleep 2; vless_menu; }
 
-create_trojan_account() { echo "Function not implemented"; sleep 2; trojan_menu; }
+create_trojan_account() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                  CREATE TROJAN ACCOUNT                 ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # --- Configuration ---
+    XRAY_CONFIG="/usr/local/etc/xray/config.json"
+    USER_DB="/usr/local/bin/server-manager/data/trojan_users.db"
+
+    # --- Pre-flight checks ---
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}Error: jq is not installed. Please fix the script dependencies.${NC}"
+        sleep 3
+        trojan_menu
+        return
+    fi
+    if [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${RED}Error: Xray config file not found at $XRAY_CONFIG${NC}"
+        sleep 3
+        trojan_menu
+        return
+    fi
+
+    # Ensure user database file and its directory exist
+    mkdir -p "$(dirname "$USER_DB")"
+    touch "$USER_DB"
+
+    # --- Get user details ---
+    read -p "Enter username (e.g., user@domain.com): " username
+    if grep -q "^${username}:" "$USER_DB"; then
+        echo -e "${RED}Username '$username' already exists.${NC}"
+        sleep 2
+        trojan_menu
+        return
+    fi
+
+    read -p "Enter password: " password
+
+    read -p "Enter account duration (in days): " duration
+    if ! [[ "$duration" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid duration. Please enter a number.${NC}"
+        sleep 2
+        trojan_menu
+        return
+    fi
+
+    # --- Generate user data ---
+    exp_date=$(date -d "+$duration days" +"%Y-%m-%d")
+
+    # --- Modify Xray Config ---
+    # Create a backup of the config file
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak"
+
+    # Add the new client to the first Trojan inbound using jq
+    jq '.inbounds |= map(if .protocol == "trojan" and .settings.clients == null then .settings += {"clients": []} else . end) | .inbounds |= map(if .protocol == "trojan" then .settings.clients += [{"password": "'$password'", "email": "'$username'"}] else . end)' "$XRAY_CONFIG" > "$XRAY_CONFIG.tmp"
+
+    if [ $? -eq 0 ]; then
+        mv "$XRAY_CONFIG.tmp" "$XRAY_CONFIG"
+    else
+        echo -e "${RED}Failed to update Xray config. Check for errors.${NC}"
+        rm -f "$XRAY_CONFIG.tmp"
+        mv "$XRAY_CONFIG.bak" "$XRAY_CONFIG" # Restore backup
+        sleep 3
+        trojan_menu
+        return
+    fi
+
+    # --- Update Database and Services ---
+    # We store username, expiry, and the password for reference
+    echo "$username:$exp_date:$password" >> "$USER_DB"
+
+    echo -e "${YELLOW}Restarting Xray service to apply changes...${NC}"
+    systemctl restart xray
+    sleep 2
+
+    # --- Display Results ---
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                 TROJAN ACCOUNT CREATED                 ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "${YELLOW}Username (email):${NC} ${GREEN}$username${NC}"
+    echo -e "${YELLOW}Password:${NC}         ${GREEN}$password${NC}"
+    echo -e "${YELLOW}Expires on:${NC}       ${GREEN}$exp_date${NC}"
+    echo -e ""
+    echo -e "${WHITE}NOTE: Further details (address, port, etc.) depend on your Xray inbound configuration.${NC}"
+    echo -e ""
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -n 1 -s -r -p "Press any key to return to the Trojan menu"
+    trojan_menu
+}
 trial_trojan_account() { echo "Function not implemented"; sleep 2; trojan_menu; }
 renew_trojan_account() { echo "Function not implemented"; sleep 2; trojan_menu; }
 delete_trojan_account() { echo "Function not implemented"; sleep 2; trojan_menu; }
 check_trojan_login() { echo "Function not implemented"; sleep 2; trojan_menu; }
 list_trojan_members() { echo "Function not implemented"; sleep 2; trojan_menu; }
 
-create_ss_account() { echo "Function not implemented"; sleep 2; shadow_menu; }
+create_ss_account() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}               CREATE SHADOWSOCKS ACCOUNT               ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # --- Configuration ---
+    XRAY_CONFIG="/usr/local/etc/xray/config.json"
+    USER_DB="/usr/local/bin/server-manager/data/shadowsocks_users.db"
+    DEFAULT_METHOD="2022-blake3-aes-128-gcm"
+
+    # --- Pre-flight checks ---
+    if ! command -v jq &> /dev/null; then
+        echo -e "${RED}Error: jq is not installed. Please fix the script dependencies.${NC}"
+        sleep 3
+        shadow_menu
+        return
+    fi
+    if [ ! -f "$XRAY_CONFIG" ]; then
+        echo -e "${RED}Error: Xray config file not found at $XRAY_CONFIG${NC}"
+        sleep 3
+        shadow_menu
+        return
+    fi
+
+    # Ensure user database file and its directory exist
+    mkdir -p "$(dirname "$USER_DB")"
+    touch "$USER_DB"
+
+    # --- Get user details ---
+    read -p "Enter username (e.g., user@domain.com): " username
+    if grep -q "^${username}:" "$USER_DB"; then
+        echo -e "${RED}Username '$username' already exists.${NC}"
+        sleep 2
+        shadow_menu
+        return
+    fi
+
+    read -p "Enter password: " password
+
+    read -p "Enter encryption method [default: $DEFAULT_METHOD]: " method
+    [ -z "$method" ] && method="$DEFAULT_METHOD"
+
+    read -p "Enter account duration (in days): " duration
+    if ! [[ "$duration" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid duration. Please enter a number.${NC}"
+        sleep 2
+        shadow_menu
+        return
+    fi
+
+    # --- Generate user data ---
+    exp_date=$(date -d "+$duration days" +"%Y-%m-%d")
+
+    # --- Modify Xray Config ---
+    # Create a backup of the config file
+    cp "$XRAY_CONFIG" "$XRAY_CONFIG.bak"
+
+    # Add the new client to the first Shadowsocks inbound using jq
+    # NOTE: This assumes a non-standard Xray config where a Shadowsocks inbound has a "clients" array.
+    # This is consistent with how the other protocols are handled in this script.
+    jq '.inbounds |= map(if .protocol == "shadowsocks" and .settings.clients == null then .settings += {"clients": []} else . end) | .inbounds |= map(if .protocol == "shadowsocks" then .settings.clients += [{"method": "'$method'", "password": "'$password'", "email": "'$username'"}] else . end)' "$XRAY_CONFIG" > "$XRAY_CONFIG.tmp"
+
+    if [ $? -eq 0 ]; then
+        mv "$XRAY_CONFIG.tmp" "$XRAY_CONFIG"
+    else
+        echo -e "${RED}Failed to update Xray config. Check for errors.${NC}"
+        rm -f "$XRAY_CONFIG.tmp"
+        mv "$XRAY_CONFIG.bak" "$XRAY_CONFIG" # Restore backup
+        sleep 3
+        shadow_menu
+        return
+    fi
+
+    # --- Update Database and Services ---
+    echo "$username:$exp_date:$password:$method" >> "$USER_DB"
+
+    echo -e "${YELLOW}Restarting Xray service to apply changes...${NC}"
+    systemctl restart xray
+    sleep 2
+
+    # --- Display Results ---
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}               SHADOWSOCKS ACCOUNT CREATED              ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "${YELLOW}Username (email):${NC} ${GREEN}$username${NC}"
+    echo -e "${YELLOW}Password:${NC}         ${GREEN}$password${NC}"
+    echo -e "${YELLOW}Method:${NC}           ${GREEN}$method${NC}"
+    echo -e "${YELLOW}Expires on:${NC}       ${GREEN}$exp_date${NC}"
+    echo -e ""
+    echo -e "${WHITE}NOTE: Further details (address, port, etc.) depend on your Xray inbound configuration.${NC}"
+    echo -e ""
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -n 1 -s -r -p "Press any key to return to the Shadowsocks menu"
+    shadow_menu
+}
 trial_ss_account() { echo "Function not implemented"; sleep 2; shadow_menu; }
 renew_ss_account() { echo "Function not implemented"; sleep 2; shadow_menu; }
 delete_ss_account() { echo "Function not implemented"; sleep 2; shadow_menu; }
