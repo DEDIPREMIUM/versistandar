@@ -60,7 +60,7 @@ install_dependencies() {
     apt-get update -qq
     
     echo -e "${BLUE}Installing required packages...${NC}"
-    apt-get install -y -qq curl wget net-tools htop vnstat nginx apache2 speedtest-cli openssl jq dropbear haproxy >/dev/null 2>&1
+    apt-get install -y -qq curl wget net-tools htop vnstat nginx apache2 speedtest-cli openssl jq dropbear haproxy certbot python3-certbot-nginx >/dev/null 2>&1
     
     # Check if xray is installed, if not, install it
     if ! command -v xray &> /dev/null; then
@@ -147,14 +147,68 @@ EOL
     echo -e "${GREEN}Systemd service created successfully.${NC}"
 }
 
+# Function to get user input
+get_user_input() {
+    echo -e "${BLUE}--- User Configuration ---${NC}"
+
+    # Get domain
+    read -p "Please enter your domain name (e.g., mydomain.com): " DOMAIN
+    if [ -z "$DOMAIN" ]; then
+        echo -e "${RED}Domain name cannot be empty.${NC}"
+        exit 1
+    fi
+    echo "$DOMAIN" > /etc/domain
+
+    # Get email for SSL
+    read -p "Please enter your email address (for Let's Encrypt SSL): " EMAIL
+    if [ -z "$EMAIL" ]; then
+        echo -e "${RED}Email address cannot be empty.${NC}"
+        exit 1
+    fi
+
+    # Export for other functions
+    export DOMAIN
+    export EMAIL
+
+    echo -e "${GREEN}Configuration received. Using domain: $DOMAIN${NC}"
+    echo -e ""
+}
+
+# Function to set up SSL certificate
+setup_ssl() {
+    echo -e "${BLUE}--- SSL Certificate Setup ---${NC}"
+    echo -e "${YELLOW}Attempting to obtain an SSL certificate for $DOMAIN...${NC}"
+
+    # Run Certbot
+    certbot --nginx -d "$DOMAIN" --agree-tos -m "$EMAIL" --non-interactive
+
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}SSL certificate obtained and configured successfully!${NC}"
+    else
+        echo -e "${RED}Failed to obtain SSL certificate.${NC}"
+        echo -e "${YELLOW}Please check that your domain points to this server's IP and that port 80 is open.${NC}"
+        echo -e "${YELLOW}Continuing installation. You may need to configure SSL manually.${NC}"
+    fi
+    echo -e ""
+}
+
 # Main installation function
 main_installation() {
+    # Get user input first
+    get_user_input
+
     # Detect OS
     detect_os
     
     # Install dependencies
     install_dependencies
     
+    # Set up SSL
+    setup_ssl
+
+    # Generate Xray config
+    generate_xray_config
+
     # Create directories
     create_directories
     

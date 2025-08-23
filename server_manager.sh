@@ -1960,10 +1960,153 @@ change_domain() {
     read -n 1 -s -r -p "Press any key to return to the System menu"
     system_menu
 }
-change_port() { echo "Function not implemented"; sleep 2; system_menu; }
+change_port() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                      CHANGE PORT                       ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+    echo -e "This feature allows you to change the ports for SSH and Dropbear."
+    echo -e "Changing ports for Xray services must be done by manually"
+    echo -e "editing the /usr/local/etc/xray/config.json file."
+    echo -e ""
+    echo -e " ${GREEN}[1]${NC} ${WHITE}Change Port SSH${NC}"
+    echo -e " ${GREEN}[2]${NC} ${WHITE}Change Port Dropbear${NC}"
+    echo -e " ${GREEN}[0]${NC} ${WHITE}Back to System Menu${NC}"
+    echo -e ""
+    read -p "Select an option: " choice
+
+    case $choice in
+        1)
+            current_port=$(grep -E "^Port " /etc/ssh/sshd_config | awk '{print $2}')
+            read -p "Enter new SSH port [current: $current_port]: " new_port
+            if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+                echo -e "${RED}Invalid port number.${NC}"; sleep 2; change_port; return
+            fi
+            sed -i "s/^Port .*/Port $new_port/" /etc/ssh/sshd_config
+            systemctl restart ssh
+            echo -e "\n${GREEN}SSH port has been changed to $new_port${NC}"
+            ;;
+        2)
+            current_port=$(grep -E "^DROPBEAR_PORT=" /etc/default/dropbear | cut -d'=' -f2)
+            read -p "Enter new Dropbear port [current: $current_port]: " new_port
+            if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1 ] || [ "$new_port" -gt 65535 ]; then
+                echo -e "${RED}Invalid port number.${NC}"; sleep 2; change_port; return
+            fi
+            sed -i "s/^DROPBEAR_PORT=.*/DROPBEAR_PORT=$new_port/" /etc/default/dropbear
+            systemctl restart dropbear
+            echo -e "\n${GREEN}Dropbear port has been changed to $new_port${NC}"
+            ;;
+        0)
+            system_menu
+            ;;
+        *)
+            echo -e "${RED}Invalid option.${NC}"
+            ;;
+    esac
+
+    sleep 3
+    system_menu
+}
 autoboot_menu() { echo "Function not implemented"; sleep 2; system_menu; }
-backup_menu() { echo "Function not implemented"; sleep 2; system_menu; }
-restore_menu() { echo "Function not implemented"; sleep 2; system_menu; }
+backup_menu() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                      BACKUP MENU                       ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+
+    BACKUP_ROOT="/root/backups"
+    TIMESTAMP=$(date +"%Y-%m-%d-%H%M%S")
+    BACKUP_DIR="$BACKUP_ROOT/server-manager-$TIMESTAMP"
+    BACKUP_FILE="$BACKUP_ROOT/server-manager-backup-$TIMESTAMP.tar.gz"
+
+    echo -e "${YELLOW}Creating backup directory...${NC}"
+    mkdir -p "$BACKUP_DIR/xray"
+    mkdir -p "$BACKUP_DIR/ssh"
+    mkdir -p "$BACKUP_DIR/dropbear"
+    mkdir -p "$BACKUP_DIR/script_data"
+
+    echo -e "${YELLOW}Copying configuration files...${NC}"
+    cp -r /usr/local/bin/server-manager/data/* "$BACKUP_DIR/script_data/"
+    cp /usr/local/etc/xray/config.json "$BACKUP_DIR/xray/"
+    cp /etc/ssh/sshd_config "$BACKUP_DIR/ssh/"
+    cp /etc/default/dropbear "$BACKUP_DIR/dropbear/"
+
+    echo -e "${YELLOW}Creating compressed backup file...${NC}"
+    tar -czf "$BACKUP_FILE" -C "$BACKUP_ROOT" "server-manager-$TIMESTAMP"
+
+    # Clean up the temporary directory
+    rm -rf "$BACKUP_DIR"
+
+    if [ -f "$BACKUP_FILE" ]; then
+        echo -e ""
+        echo -e "${GREEN}Backup created successfully!${NC}"
+        echo -e "${WHITE}Your backup file is located at:${NC} ${CYAN}$BACKUP_FILE${NC}"
+        echo -e ""
+    else
+        echo -e "${RED}Backup failed!${NC}"
+    fi
+
+    read -n 1 -s -r -p "Press any key to return to the System menu"
+    system_menu
+}
+restore_menu() {
+    clear
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${WHITE}                      RESTORE MENU                      ${NC}"
+    echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e ""
+
+    read -p "Enter the full path to the backup file (.tar.gz): " backup_file
+
+    if [ ! -f "$backup_file" ]; then
+        echo -e "${RED}Error: Backup file not found at '$backup_file'${NC}"
+        sleep 2
+        system_menu
+        return
+    fi
+
+    echo -e "${YELLOW}This will overwrite all current configurations with the backup data.${NC}"
+    read -p "Are you sure you want to proceed? (y/n): " choice
+
+    if [[ ! "$choice" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Restore cancelled.${NC}"
+        sleep 2
+        system_menu
+        return
+    fi
+
+    RESTORE_DIR=$(mktemp -d)
+
+    echo -e "${YELLOW}Extracting backup file...${NC}"
+    tar -xzf "$backup_file" -C "$RESTORE_DIR"
+
+    # Find the actual backup directory inside the temp dir
+    inner_dir=$(find "$RESTORE_DIR" -mindepth 1 -maxdepth 1 -type d)
+
+    if [ -z "$inner_dir" ]; then
+        echo -e "${RED}Could not find data in the backup file.${NC}"; rm -rf "$RESTORE_DIR"; sleep 2; system_menu; return;
+    fi
+
+    echo -e "${YELLOW}Restoring files...${NC}"
+    # Use -a flag to preserve permissions, and add error handling
+    cp -a "$inner_dir/script_data/"* /usr/local/bin/server-manager/data/ && \
+    cp -a "$inner_dir/xray/config.json" /usr/local/etc/xray/ && \
+    cp -a "$inner_dir/ssh/sshd_config" /etc/ssh/ && \
+    cp -a "$inner_dir/dropbear/dropbear" /etc/default/ && \
+    echo -e "${GREEN}Files restored successfully!${NC}" || \
+    { echo -e "${RED}An error occurred during file restoration.${NC}"; rm -rf "$RESTORE_DIR"; sleep 3; system_menu; return; }
+
+    rm -rf "$RESTORE_DIR"
+
+    echo -e ""
+    echo -e "${YELLOW}Restore complete. It is highly recommended to restart all services or reboot the system now.${NC}"
+    echo -e ""
+
+    read -n 1 -s -r -p "Press any key to return to the System menu"
+    system_menu
+}
 webmin_menu() { echo "Function not implemented"; sleep 2; system_menu; }
 limit_bandwidth() { echo "Function not implemented"; sleep 2; system_menu; }
 check_usage() { echo "Function not implemented"; sleep 2; system_menu; }
