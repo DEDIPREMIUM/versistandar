@@ -60,7 +60,7 @@ install_dependencies() {
     apt-get update -qq
     
     echo -e "${BLUE}Installing required packages...${NC}"
-    apt-get install -y -qq curl wget net-tools htop vnstat nginx apache2 speedtest-cli openssl jq >/dev/null 2>&1
+    apt-get install -y -qq curl wget net-tools htop vnstat nginx apache2 speedtest-cli openssl jq dropbear haproxy >/dev/null 2>&1
     
     # Check if xray is installed, if not, install it
     if ! command -v xray &> /dev/null; then
